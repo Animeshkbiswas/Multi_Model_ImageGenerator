@@ -135,5 +135,5 @@ with st.sidebar:
     - **Pose-Aware Art** – Maintains human poses and body positions accurately  
     - **Sketch-to-Art** – Transforms rough sketches into refined artwork  
     - **Surface-Normal Art** – Generates with accurate surface lighting and textures  
-    - **controlnet_tile** – Generates art with a focus on tile-based patterns and structures
+    - **Controlnet_tile** – Generates art with a focus on tile-based patterns and structures
     """)
