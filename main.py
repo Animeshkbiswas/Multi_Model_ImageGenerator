@@ -43,7 +43,7 @@ MODELS = {
     "base": "stabilityai/stable-diffusion-xl-base-1.0",
     "refiner": "stabilityai/stable-diffusion-xl-refiner-1.0",
     "depth": "diffusers/controlnet-depth-sdxl-1.0",
-    "pose": "thibaud/controlnet-openpose-sdxl-1.0",  # Updated to working SDXL model
+    "pose": "thibaud/controlnet-openpose-sdxl-1.0",
     "canny": "diffusers/controlnet-canny-sdxl-1.0",
     "vae": "madebyollin/sdxl-vae-fp16-fix"
 }
@@ -65,9 +65,8 @@ def encode_img(img: Image.Image) -> str:
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-def get_controlnet_output(prompt, guide_img, model_id, vae, seed):
+def get_controlnet_output(prompt, guide_img, model_id, vae, refiner=None, seed=1, refine_strength=0.3):
     try:
-        # Verify model is SDXL compatible
         if "sdxl" not in model_id.lower() and "xl" not in model_id.lower():
             raise ValueError(f"Model {model_id} is not SDXL compatible")
             
@@ -79,14 +78,28 @@ def get_controlnet_output(prompt, guide_img, model_id, vae, seed):
             vae=vae
         )
         pipe.enable_model_cpu_offload()
-        result = pipe(
+        
+        # Generate the ControlNet-guided image
+        image = pipe(
             prompt=prompt,
             image=guide_img,
             num_inference_steps=30,
             guidance_scale=8.0,
             generator=torch.manual_seed(seed)
         ).images[0]
-        return encode_img(result)
+        
+        # Apply controlled refinement if requested
+        if refiner and refine_strength > 0:
+            image = refiner(
+                prompt=prompt,
+                image=image,
+                strength=refine_strength,
+                num_inference_steps=max(10, int(30 * refine_strength)),
+                guidance_scale=5.0,  # Lower guidance for refinement
+                generator=torch.manual_seed(seed)
+            ).images[0]
+        
+        return encode_img(image)
     except Exception as e:
         print(f"ControlNet failed for {model_id}: {str(e)}")
         return "generation_failed"
@@ -99,7 +112,15 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
     try:
         vae = AutoencoderKL.from_pretrained(MODELS["vae"], torch_dtype=torch.float16)
 
-        # SDXL base + refiner
+        # Initialize refiner first since we'll use it in ControlNet processing
+        refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+            MODELS["refiner"],
+            torch_dtype=torch.float16,
+            vae=vae
+        )
+        refiner.enable_model_cpu_offload()
+
+        # Base pipeline setup
         base_pipe = StableDiffusionXLPipeline.from_pretrained(
             MODELS["base"],
             torch_dtype=torch.float16,
@@ -114,16 +135,10 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
         )
         base_pipe.enable_model_cpu_offload()
 
-        refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-            MODELS["refiner"],
-            torch_dtype=torch.float16,
-            vae=vae
-        )
-        refiner.enable_model_cpu_offload()
-
         generator = torch.manual_seed(1)
         enhanced_prompt = f"{prompt}, masterpiece, 4K, best quality"
 
+        # Base image generation
         if input_image and strength > 0:
             latent = base_pipe(
                 prompt=enhanced_prompt,
@@ -145,6 +160,7 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
                 output_type="latent"
             ).images[0]
 
+        # Full strength refinement for base image
         refined = refiner(
             prompt=enhanced_prompt,
             image=latent,
@@ -155,35 +171,45 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
         results["base"] = encode_img(refined)
 
         if input_image:
-            # Depth
+            # Depth with moderate refinement
             try:
                 depth_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas")
                 depth_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
                 depth_inputs = depth_extractor(images=input_image, return_tensors="pt")
                 with torch.no_grad():
                     depth = depth_model(**depth_inputs).predicted_depth
-                depth = torch.nn.functional.interpolate(depth.unsqueeze(1), size=(1024, 1024), mode="bicubic").squeeze().cpu().numpy()
+                depth = torch.nn.functional.interpolate(
+                    depth.unsqueeze(1), 
+                    size=(1024, 1024), 
+                    mode="bicubic"
+                ).squeeze().cpu().numpy()
                 depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
                 depth_img = Image.fromarray(depth.astype("uint8")).convert("RGB")
-                results["depth"] = get_controlnet_output(prompt, depth_img, MODELS["depth"], vae, seed=2)
+                results["depth"] = get_controlnet_output(
+                    prompt, depth_img, MODELS["depth"], vae, refiner, seed=2, refine_strength=0.3
+                )
             except Exception as e:
                 print(f"Depth failed: {str(e)}")
                 results["depth"] = "generation_failed"
 
-            # Pose
+            # Pose with light refinement
             try:
                 pose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
                 pose_img = pose_detector(input_image)
-                results["pose"] = get_controlnet_output(prompt, pose_img, MODELS["pose"], vae, seed=3)
+                results["pose"] = get_controlnet_output(
+                    prompt, pose_img, MODELS["pose"], vae, refiner, seed=3, refine_strength=0.2
+                )
             except Exception as e:
                 print(f"Pose failed: {str(e)}")
                 results["pose"] = "generation_failed"
 
-            # Canny
+            # Canny with moderate refinement
             try:
                 canny_edges = cv2.Canny(np.array(input_image), 100, 200)
                 canny_img = Image.fromarray(canny_edges).convert("RGB")
-                results["canny"] = get_controlnet_output(prompt, canny_img, MODELS["canny"], vae, seed=4)
+                results["canny"] = get_controlnet_output(
+                    prompt, canny_img, MODELS["canny"], vae, refiner, seed=4, refine_strength=0.4
+                )
             except Exception as e:
                 print(f"Canny failed: {str(e)}")
                 results["canny"] = "generation_failed"
@@ -219,7 +245,6 @@ def fastapi_app():
     @app.post("/compare")
     async def generate(request: RequestModel):
         try:
-            # Using synchronous remote call (no await needed)
             result = generate_images.remote(
                 prompt=request.prompt,
                 input_image_b64=request.input_image_b64,
