@@ -26,6 +26,16 @@ with st.form("generation_form"):
     prompt = st.text_area("Prompt", placeholder="e.g., 'a woman in traditional Indian attire standing in a sunset field'")
     submitted = st.form_submit_button("Generate & Compare")
 
+# Model display names mapping
+MODEL_DISPLAY_NAMES = {
+    "controlnet_canny": "Edge-Guided Art",
+    "controlnet_depth": "3D Depth Art",
+    "controlnet_pose": "Pose-Aware Art",
+    "controlnet_scribble": "Sketch-to-Art",
+    "controlnet_normal": "Surface-Normal Art",
+    "combined_canny_pose": "Edge+Pose Fusion"
+}
+
 # Run Generation
 if submitted:
     if not uploaded_file:
@@ -66,13 +76,18 @@ if submitted:
 
                     st.markdown("### Model Outputs")
                     images = result["images"]
+                    
+                    # Create columns based on number of returned images
                     cols = st.columns(len(images))
-
+                    
                     for i, (model_key, img_b64) in enumerate(images.items()):
                         with cols[i]:
                             image_data = base64.b64decode(img_b64)
                             image = Image.open(io.BytesIO(image_data))
-                            st.image(image, caption=model_key.replace("_", " ").title(), use_container_width=True)
+                            
+                            # Use the display name from our mapping
+                            display_name = MODEL_DISPLAY_NAMES.get(model_key, model_key)
+                            st.image(image, caption=display_name, use_container_width=True)
 
                             # Download Button
                             buffered = io.BytesIO()
@@ -80,7 +95,7 @@ if submitted:
                             st.download_button(
                                 label="Download",
                                 data=buffered.getvalue(),
-                                file_name=f"{model_key}.png",
+                                file_name=f"{display_name.replace(' ', '_')}.png",
                                 mime="image/png"
                             )
                 else:
@@ -115,10 +130,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Models Used")
     st.markdown("""
-    - **ControlNet (Canny)** – Structure-aware generation based on image edges  
-    - **ControlNet (Depth)** – Depth-guided generation understanding 3D structure  
-    - **ControlNet (OpenPose)** – Generates based on body pose and skeleton  
-    - **ControlNet (Scribble)** – Sketch-to-image generation using scribbles  
-    - **ControlNet (Normal Map)** – Surface-aware generation using normals  
-    - **SDXL Turbo (img2img)** – Fast, high-quality transformation from image  
+    - **Edge-Guided Art** – Creates art based on image edges and contours  
+    - **3D Depth Art** – Generates with understanding of depth and spatial relationships  
+    - **Pose-Aware Art** – Maintains human poses and body positions accurately  
+    - **Sketch-to-Art** – Transforms rough sketches into refined artwork  
+    - **Surface-Normal Art** – Generates with accurate surface lighting and textures  
+    - **Edge+Pose Fusion** – Combines edge detection and pose awareness for precise generation  
     """)
