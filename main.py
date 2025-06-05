@@ -147,7 +147,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         images_out["controlnet_normal"] = encode_img(pipe_normal(
             prompt=prompt + ", ultra-realistic materials, detailed shading, studio lighting",
             image=normal_img,
-            num_inference_steps=40,
+            num_inference_steps=steps,
             guidance_scale=9.0,
             generator=torch.manual_seed(5),
             negative_prompt="flat lighting, noisy, blurry, distorted shadows"
@@ -198,7 +198,7 @@ def fastapi_app():
         input_image_b64: str
         strength: float = 0.6
         guidance_scale: float = 7.5
-        steps: int = 40
+        steps: int = 20
 
     @app.post("/compare")
     async def compare(request: RequestModel):
