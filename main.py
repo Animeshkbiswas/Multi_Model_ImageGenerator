@@ -91,7 +91,7 @@ def get_controlnet_output(prompt, guide_img, model_id, vae, seed):
         print(f"ControlNet failed for {model_id}: {str(e)}")
         return "generation_failed"
 
-@app.function(image=image, gpu="A100", timeout=6000)
+@app.function(image=image, gpu="A100-40GB", timeout=6000)
 def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8.0, steps=30):
     results = {}
     input_image = decode_img(input_image_b64) if input_image_b64 else None
