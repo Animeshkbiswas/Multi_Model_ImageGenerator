@@ -1,180 +1,197 @@
 import modal
+from diffusers import (
+    StableDiffusionXLPipeline,
+    StableDiffusionXLImg2ImgPipeline,
+    StableDiffusionXLControlNetPipeline,
+    DPMSolverMultistepScheduler,
+    AutoencoderKL,
+    ControlNetModel,
+)
+from PIL import Image
+import numpy as np
+import base64
+import io
+import torch
+from transformers import DPTFeatureExtractor, DPTForDepthEstimation
+from controlnet_aux.open_pose import OpenposeDetector
+import cv2
 
 app = modal.App("multi-model-image-api")
 
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install("libgl1", "libglib2.0-0")
+    .apt_install("libgl1", "libglib2.0-0", "libsm6", "libxext6")
     .pip_install(
-        "torch", "diffusers", "transformers", "accelerate", "opencv-python",
-        "safetensors", "Pillow", "fastapi", "pydantic", "mediapipe", 
-        "controlnet-aux>=0.0.6", "scikit-image"
+        "numpy<2.0",
+        "torch==2.1.2",
+        "diffusers==0.26.3",
+        "transformers==4.38.2",
+        "accelerate==0.27.2",
+        "opencv-python==4.9.0.80",
+        "safetensors==0.4.2",
+        "Pillow==10.2.0",
+        "fastapi==0.109.1",
+        "pydantic==2.6.4",
+        "mediapipe==0.10.9",
+        "controlnet-aux==0.0.7",
+        "scikit-image==0.22.0",
+        "huggingface-hub==0.20.3"
     )
 )
 
-@app.function(
-    image=image,
-    gpu="A100-40GB",
-    timeout=600,
-    min_containers=1
-)
-def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, guidance_scale: float = 7.5, steps: int = 20) -> dict:
-    import torch
-    from diffusers import (
-        StableDiffusionControlNetPipeline,
-        ControlNetModel,
-        UniPCMultistepScheduler,
-    )
-    from PIL import Image
-    import numpy as np
-    import base64
-    import io
-    import cv2
-    from skimage import filters
-    from transformers import DPTFeatureExtractor, DPTForDepthEstimation
-    from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector
+MODELS = {
+    "base": "stabilityai/stable-diffusion-xl-base-1.0",
+    "refiner": "stabilityai/stable-diffusion-xl-refiner-1.0",
+    "depth": "diffusers/controlnet-depth-sdxl-1.0",
+    "pose": "thibaud/controlnet-openpose-sdxl-1.0",  # Updated to working SDXL model
+    "canny": "diffusers/controlnet-canny-sdxl-1.0",
+    "vae": "madebyollin/sdxl-vae-fp16-fix"
+}
 
-    def decode_img(b64):
-        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize((768, 768))
-
-    def encode_img(img):
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-    input_image = decode_img(input_image_b64)
-    images_out = {}
-
-    # === SLOT 1: ControlNet (Canny) ===
-    canny_np = cv2.Canny(np.array(input_image), 100, 200)
-    canny_pil = Image.fromarray(cv2.cvtColor(canny_np, cv2.COLOR_GRAY2RGB))
-    controlnet_canny = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
-    pipe_canny = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_canny, torch_dtype=torch.float16,safety_checker=None )
-    pipe_canny.scheduler = UniPCMultistepScheduler.from_config(pipe_canny.scheduler.config)
-    pipe_canny.enable_model_cpu_offload()
-    images_out["controlnet_canny"] = encode_img(pipe_canny(
-         prompt=prompt + ", vivid colors, edge-enhanced, realistic lighting",
-        image=canny_pil,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(1),
-        guidance_scale=guidance_scale,
-         negative_prompt="monochrome, blurry, dull"
-    ).images[0])
-
-    # === SLOT 2: ControlNet (Depth) ===
-    depth_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas")
-    depth_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
-    depth_inputs = depth_extractor(images=input_image, return_tensors="pt")
-    with torch.no_grad():
-        depth_output = depth_model(**depth_inputs)
-        depth = depth_output.predicted_depth
-    depth = torch.nn.functional.interpolate(depth.unsqueeze(1), size=(768, 768), mode="bicubic", align_corners=False)
-    depth = depth.squeeze().cpu().numpy()
-    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
-    depth_pil = Image.fromarray(depth.astype("uint8")).convert("RGB")
-    controlnet_depth = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth", torch_dtype=torch.float16)
-    pipe_depth = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_depth, torch_dtype=torch.float16, safety_checker=None)
-    pipe_depth.scheduler = UniPCMultistepScheduler.from_config(pipe_depth.scheduler.config)
-    pipe_depth.enable_model_cpu_offload()
-    images_out["controlnet_depth"] = encode_img(pipe_depth(
-        prompt=prompt + ", 3D lighting, realistic depth",
-        image=depth_pil,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(2),
-        guidance_scale=guidance_scale,
-        negative_prompt="blurry, low resolution"
-    ).images[0])
-
-    # === SLOT 3: ControlNet (OpenPose) ===
-    pose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-    pose_img = pose_detector(input_image)
-    controlnet_pose = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
-    pipe_pose = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_pose, torch_dtype=torch.float16, safety_checker=None)
-    pipe_pose.scheduler = UniPCMultistepScheduler.from_config(pipe_pose.scheduler.config)
-    pipe_pose.enable_model_cpu_offload()
-    images_out["controlnet_pose"] = encode_img(pipe_pose(
-        prompt=prompt + ", full body, dynamic pose",
-        image=pose_img,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(3),
-        guidance_scale=guidance_scale,
-        negative_prompt="blurry, distorted"
-    ).images[0])
-
-    # === SLOT 4: ControlNet (Scribble) ===
-    scribble_detector = CannyDetector()
-    scribble_img = scribble_detector(input_image)
-    controlnet_scribble = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-scribble", torch_dtype=torch.float16)
-    pipe_scribble = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_scribble, torch_dtype=torch.float16, safety_checker=None)
-    pipe_scribble.scheduler = UniPCMultistepScheduler.from_config(pipe_scribble.scheduler.config)
-    pipe_scribble.enable_model_cpu_offload()
-    images_out["controlnet_scribble"] = encode_img(pipe_scribble(
-        prompt=prompt + ", sketch style, clean outline",
-        image=scribble_img,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(4),
-        guidance_scale=guidance_scale,
-        negative_prompt="incomplete, noisy"
-    ).images[0])
-
-    # === SLOT 5: IMPROVED ControlNet (Normal Map) ===
+def decode_img(b64: str) -> Image.Image:
     try:
-        normal_detector = NormalBaeDetector.from_pretrained("lllyasviel/Annotators")
-        normal_img = normal_detector(input_image, detect_resolution=768, image_resolution=768)
-
-        # Enhanced normal map processing
-        normal_np = np.array(normal_img)
-        normal_np = cv2.GaussianBlur(normal_np, (3, 3), 0)  # Reduce noise
-        normal_np = cv2.detailEnhance(normal_np, sigma_s=10, sigma_r=0.15)  # Sharpen details
-        normal_img = Image.fromarray(normal_np)
-
-        controlnet_normal = ControlNetModel.from_pretrained(
-            "fusing/stable-diffusion-v1-5-controlnet-normal",
-            torch_dtype=torch.float16
-        )
-        # Using standard runwayml model instead of gated one
-        pipe_normal = StableDiffusionControlNetPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
-            controlnet=controlnet_normal,
-            torch_dtype=torch.float16, safety_checker=None
-        )
-        pipe_normal.scheduler = UniPCMultistepScheduler.from_config(pipe_normal.scheduler.config)
-        pipe_normal.enable_model_cpu_offload()
-        images_out["controlnet_normal"] = encode_img(pipe_normal(
-            prompt=prompt + ", ultra-realistic materials, detailed shading, studio lighting",
-            image=normal_img,
-            num_inference_steps=steps,
-            guidance_scale=9.0,
-            generator=torch.manual_seed(5),
-            negative_prompt="flat lighting, noisy, blurry, distorted shadows"
-        ).images[0])
+        b64 = b64.strip()
+        if len(b64) % 4 != 0:
+            b64 += '=' * (4 - len(b64) % 4)
+        img_data = base64.b64decode(b64)
+        img = Image.open(io.BytesIO(img_data))
+        return img.convert("RGB").resize((1024, 1024))
     except Exception as e:
-        print(f"Normal map generation failed: {str(e)}")
-        images_out["controlnet_normal"] = "generation_failed"
+        print(f"Image decoding failed: {str(e)}")
+        return Image.new("RGB", (1024, 1024), "white")
 
-    # === SLOT 6: ControlNet (Tile) ===
-    controlnet_tile = ControlNetModel.from_pretrained("lllyasviel/control_v11f1e_sd15_tile", torch_dtype=torch.float16)
-    pipe_tile = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",
-        controlnet=controlnet_tile,
-        torch_dtype=torch.float16, safety_checker=None
-    )
-    pipe_tile.scheduler = UniPCMultistepScheduler.from_config(pipe_tile.scheduler.config)
-    pipe_tile.enable_model_cpu_offload()
-    images_out["controlnet_tile"] = encode_img(pipe_tile(
-        prompt=prompt + ", high detail, sharp focus",
-        image=input_image,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(6),
-        guidance_scale=guidance_scale,
-        negative_prompt="blurry, low detail, out of focus"
-    ).images[0])
+def encode_img(img: Image.Image) -> str:
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    return images_out
+def get_controlnet_output(prompt, guide_img, model_id, vae, seed):
+    try:
+        # Verify model is SDXL compatible
+        if "sdxl" not in model_id.lower() and "xl" not in model_id.lower():
+            raise ValueError(f"Model {model_id} is not SDXL compatible")
+            
+        controlnet = ControlNetModel.from_pretrained(model_id, torch_dtype=torch.float16)
+        pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
+            MODELS["base"],
+            controlnet=controlnet,
+            torch_dtype=torch.float16,
+            vae=vae
+        )
+        pipe.enable_model_cpu_offload()
+        result = pipe(
+            prompt=prompt,
+            image=guide_img,
+            num_inference_steps=30,
+            guidance_scale=8.0,
+            generator=torch.manual_seed(seed)
+        ).images[0]
+        return encode_img(result)
+    except Exception as e:
+        print(f"ControlNet failed for {model_id}: {str(e)}")
+        return "generation_failed"
+
+@app.function(image=image, gpu="A100", timeout=6000)
+def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8.0, steps=30):
+    results = {}
+    input_image = decode_img(input_image_b64) if input_image_b64 else None
+
+    try:
+        vae = AutoencoderKL.from_pretrained(MODELS["vae"], torch_dtype=torch.float16)
+
+        # SDXL base + refiner
+        base_pipe = StableDiffusionXLPipeline.from_pretrained(
+            MODELS["base"],
+            torch_dtype=torch.float16,
+            vae=vae,
+            use_safetensors=True,
+            variant="fp16"
+        )
+        base_pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+            base_pipe.scheduler.config,
+            use_karras_sigmas=True,
+            algorithm_type="sde-dpmsolver++"
+        )
+        base_pipe.enable_model_cpu_offload()
+
+        refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+            MODELS["refiner"],
+            torch_dtype=torch.float16,
+            vae=vae
+        )
+        refiner.enable_model_cpu_offload()
+
+        generator = torch.manual_seed(1)
+        enhanced_prompt = f"{prompt}, masterpiece, 4K, best quality"
+
+        if input_image and strength > 0:
+            latent = base_pipe(
+                prompt=enhanced_prompt,
+                image=input_image,
+                strength=strength,
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                output_type="latent"
+            ).images[0]
+        else:
+            latent = base_pipe(
+                prompt=enhanced_prompt,
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                width=1024,
+                height=1024,
+                output_type="latent"
+            ).images[0]
+
+        refined = refiner(
+            prompt=enhanced_prompt,
+            image=latent,
+            num_inference_steps=max(10, steps // 2),
+            generator=generator
+        ).images[0]
+
+        results["base"] = encode_img(refined)
+
+        if input_image:
+            # Depth
+            try:
+                depth_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas")
+                depth_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
+                depth_inputs = depth_extractor(images=input_image, return_tensors="pt")
+                with torch.no_grad():
+                    depth = depth_model(**depth_inputs).predicted_depth
+                depth = torch.nn.functional.interpolate(depth.unsqueeze(1), size=(1024, 1024), mode="bicubic").squeeze().cpu().numpy()
+                depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
+                depth_img = Image.fromarray(depth.astype("uint8")).convert("RGB")
+                results["depth"] = get_controlnet_output(prompt, depth_img, MODELS["depth"], vae, seed=2)
+            except Exception as e:
+                print(f"Depth failed: {str(e)}")
+                results["depth"] = "generation_failed"
+
+            # Pose
+            try:
+                pose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
+                pose_img = pose_detector(input_image)
+                results["pose"] = get_controlnet_output(prompt, pose_img, MODELS["pose"], vae, seed=3)
+            except Exception as e:
+                print(f"Pose failed: {str(e)}")
+                results["pose"] = "generation_failed"
+
+            # Canny
+            try:
+                canny_edges = cv2.Canny(np.array(input_image), 100, 200)
+                canny_img = Image.fromarray(canny_edges).convert("RGB")
+                results["canny"] = get_controlnet_output(prompt, canny_img, MODELS["canny"], vae, seed=4)
+            except Exception as e:
+                print(f"Canny failed: {str(e)}")
+                results["canny"] = "generation_failed"
+
+    except Exception as e:
+        results["error"] = f"Generation failed: {str(e)}"
+
+    return results
 
 @app.function(image=image)
 @modal.asgi_app()
@@ -182,9 +199,8 @@ def fastapi_app():
     from fastapi import FastAPI, HTTPException
     from pydantic import BaseModel
     from fastapi.middleware.cors import CORSMiddleware
-    import traceback
 
-    app = FastAPI(title="Multi-Model Image Generator")
+    app = FastAPI(title="Multi-Model Image API")
 
     app.add_middleware(
         CORSMiddleware,
@@ -195,40 +211,30 @@ def fastapi_app():
 
     class RequestModel(BaseModel):
         prompt: str
-        input_image_b64: str
-        strength: float = 0.6
-        guidance_scale: float = 7.5
-        steps: int = 20
+        input_image_b64: str = None
+        strength: float = 0.7
+        guidance_scale: float = 8.0
+        steps: int = 30
 
     @app.post("/compare")
-    async def compare(request: RequestModel):
+    async def generate(request: RequestModel):
         try:
-            images = generate_images.remote(
+            # Using synchronous remote call (no await needed)
+            result = generate_images.remote(
                 prompt=request.prompt,
                 input_image_b64=request.input_image_b64,
                 strength=request.strength,
                 guidance_scale=request.guidance_scale,
                 steps=request.steps
             )
-            return {
-                "images": images,
-                "models_used": list(images.keys())
-            }
+            if "error" in result:
+                raise HTTPException(500, result["error"])
+            return result
         except Exception as e:
-            raise HTTPException(status_code=500, detail=traceback.format_exc())
+            raise HTTPException(500, detail=str(e))
 
     @app.get("/health")
-    async def health():
-        return {
-            "status": "healthy",
-            "models": [
-                "controlnet_canny",
-                "controlnet_depth",
-                "controlnet_pose",
-                "controlnet_scribble",
-                "controlnet_normal",
-                "controlnet_tile"
-            ]
-        }
+    async def health_check():
+        return {"status": "healthy", "models": list(MODELS.keys())}
 
     return app
