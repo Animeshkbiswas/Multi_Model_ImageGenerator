@@ -7,7 +7,7 @@ import time
 import os
 
 st.set_page_config(page_title="Multi-Model Image Generator", layout="centered")
-MODAL_URL = os.getenv("MODAL_URL") or "https://your-api-url/compare"  # Replace with your actual API URL or set as env var
+MODAL_URL = os.getenv("MODAL_URL")  
 
 st.title("Multi-Model Image Generator")
 st.markdown("Compare AI-generated images from different models side by side.")
@@ -96,7 +96,7 @@ if submitted:
                                     mime="image/png"
                                 )
                             else:
-                                st.warning(f"{display_name} failed.")
+                                st.warning(f"{display_name} generation failed.")
                 else:
                     st.error("Unexpected response format from API.")
             else:
