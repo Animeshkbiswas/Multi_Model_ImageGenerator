@@ -50,7 +50,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     canny_pil = Image.fromarray(cv2.cvtColor(canny_np, cv2.COLOR_GRAY2RGB))
     controlnet_canny = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
     pipe_canny = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_canny, torch_dtype=torch.float16)
+        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_canny, torch_dtype=torch.float16,safety_checker=None )
     pipe_canny.scheduler = UniPCMultistepScheduler.from_config(pipe_canny.scheduler.config)
     pipe_canny.enable_model_cpu_offload()
     images_out["controlnet_canny"] = encode_img(pipe_canny(
@@ -75,7 +75,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     depth_pil = Image.fromarray(depth.astype("uint8")).convert("RGB")
     controlnet_depth = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth", torch_dtype=torch.float16)
     pipe_depth = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_depth, torch_dtype=torch.float16)
+        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_depth, torch_dtype=torch.float16, safety_checker=None)
     pipe_depth.scheduler = UniPCMultistepScheduler.from_config(pipe_depth.scheduler.config)
     pipe_depth.enable_model_cpu_offload()
     images_out["controlnet_depth"] = encode_img(pipe_depth(
@@ -92,7 +92,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     pose_img = pose_detector(input_image)
     controlnet_pose = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
     pipe_pose = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_pose, torch_dtype=torch.float16)
+        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_pose, torch_dtype=torch.float16, safety_checker=None)
     pipe_pose.scheduler = UniPCMultistepScheduler.from_config(pipe_pose.scheduler.config)
     pipe_pose.enable_model_cpu_offload()
     images_out["controlnet_pose"] = encode_img(pipe_pose(
@@ -109,7 +109,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     scribble_img = scribble_detector(input_image)
     controlnet_scribble = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-scribble", torch_dtype=torch.float16)
     pipe_scribble = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_scribble, torch_dtype=torch.float16)
+        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_scribble, torch_dtype=torch.float16, safety_checker=None)
     pipe_scribble.scheduler = UniPCMultistepScheduler.from_config(pipe_scribble.scheduler.config)
     pipe_scribble.enable_model_cpu_offload()
     images_out["controlnet_scribble"] = encode_img(pipe_scribble(
@@ -140,7 +140,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         pipe_normal = StableDiffusionControlNetPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             controlnet=controlnet_normal,
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16, safety_checker=None
         )
         pipe_normal.scheduler = UniPCMultistepScheduler.from_config(pipe_normal.scheduler.config)
         pipe_normal.enable_model_cpu_offload()
@@ -161,7 +161,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     pipe_tile = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
         controlnet=controlnet_tile,
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16, safety_checker=None
     )
     pipe_tile.scheduler = UniPCMultistepScheduler.from_config(pipe_tile.scheduler.config)
     pipe_tile.enable_model_cpu_offload()
@@ -198,7 +198,7 @@ def fastapi_app():
         input_image_b64: str
         strength: float = 0.6
         guidance_scale: float = 7.5
-        steps: int = 20
+        steps: int = 40
 
     @app.post("/compare")
     async def compare(request: RequestModel):
