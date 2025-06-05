@@ -8,7 +8,7 @@ image = (
     .pip_install(
         "torch", "diffusers", "transformers", "accelerate", "opencv-python",
         "safetensors", "Pillow", "fastapi", "pydantic", "mediapipe", 
-        "controlnet-aux>=0.0.6"
+        "controlnet-aux>=0.0.6", "scikit-image"
     )
 )
 
@@ -30,6 +30,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     import base64
     import io
     import cv2
+    from skimage import filters
     from transformers import DPTFeatureExtractor, DPTForDepthEstimation
     from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector
 
@@ -44,7 +45,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     input_image = decode_img(input_image_b64)
     images_out = {}
 
-    # === SLOT 1: ControlNet (Canny)
+    # === SLOT 1: ControlNet (Canny) ===
     canny_np = cv2.Canny(np.array(input_image), 100, 200)
     canny_pil = Image.fromarray(cv2.cvtColor(canny_np, cv2.COLOR_GRAY2RGB))
     controlnet_canny = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
@@ -61,7 +62,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="blurry, low resolution"
     ).images[0])
 
-    # === SLOT 2: ControlNet (Depth)
+    # === SLOT 2: ControlNet (Depth) ===
     depth_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas")
     depth_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
     depth_inputs = depth_extractor(images=input_image, return_tensors="pt")
@@ -86,7 +87,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="blurry, low resolution"
     ).images[0])
 
-    # === SLOT 3: ControlNet (OpenPose)
+    # === SLOT 3: ControlNet (OpenPose) ===
     pose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
     pose_img = pose_detector(input_image)
     controlnet_pose = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
@@ -103,7 +104,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="blurry, distorted"
     ).images[0])
 
-    # === SLOT 4: ControlNet (Scribble)
+    # === SLOT 4: ControlNet (Scribble) ===
     scribble_detector = CannyDetector()
     scribble_img = scribble_detector(input_image)
     controlnet_scribble = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-scribble", torch_dtype=torch.float16)
@@ -120,25 +121,42 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="incomplete, noisy"
     ).images[0])
 
-    # === SLOT 5: ControlNet (Normal Map)
-    normal_model_id = "lllyasviel/Annotators"
-    normal_detector = NormalBaeDetector.from_pretrained(normal_model_id)
-    normal_img = normal_detector(input_image)
-    controlnet_normal = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-normal", torch_dtype=torch.float16)
-    pipe_normal = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=controlnet_normal, torch_dtype=torch.float16)
-    pipe_normal.scheduler = UniPCMultistepScheduler.from_config(pipe_normal.scheduler.config)
-    pipe_normal.enable_model_cpu_offload()
-    images_out["controlnet_normal"] = encode_img(pipe_normal(
-        prompt=prompt + ", detailed shading, smooth surfaces",
-        image=normal_img,
-        num_inference_steps=steps,
-        generator=torch.manual_seed(5),
-        guidance_scale=guidance_scale,
-        negative_prompt="flat, noisy"
-    ).images[0])
+    # === SLOT 5: IMPROVED ControlNet (Normal Map) ===
+    try:
+        normal_detector = NormalBaeDetector.from_pretrained("lllyasviel/Annotators")
+        normal_img = normal_detector(input_image, detect_resolution=768, image_resolution=768)
+        
+        # Enhanced normal map processing
+        normal_np = np.array(normal_img)
+        normal_np = cv2.GaussianBlur(normal_np, (3, 3), 0)  # Reduce noise
+        normal_np = cv2.detailEnhance(normal_np, sigma_s=10, sigma_r=0.15)  # Sharpen details
+        normal_img = Image.fromarray(normal_np)
 
-    # === SLOT 6: ControlNet (Tile) - REPLACED SoftEdge with working alternative
+        controlnet_normal = ControlNetModel.from_pretrained(
+            "fusing/stable-diffusion-v1-5-controlnet-normal",
+            torch_dtype=torch.float16
+        )
+        # Using standard runwayml model instead of gated one
+        pipe_normal = StableDiffusionControlNetPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            controlnet=controlnet_normal,
+            torch_dtype=torch.float16
+        )
+        pipe_normal.scheduler = UniPCMultistepScheduler.from_config(pipe_normal.scheduler.config)
+        pipe_normal.enable_model_cpu_offload()
+        images_out["controlnet_normal"] = encode_img(pipe_normal(
+            prompt=prompt + ", ultra-realistic materials, detailed shading, studio lighting",
+            image=normal_img,
+            num_inference_steps=40,
+            guidance_scale=9.0,
+            generator=torch.manual_seed(5),
+            negative_prompt="flat lighting, noisy, blurry, distorted shadows"
+        ).images[0])
+    except Exception as e:
+        print(f"Normal map generation failed: {str(e)}")
+        images_out["controlnet_normal"] = "generation_failed"
+
+    # === SLOT 6: ControlNet (Tile) ===
     controlnet_tile = ControlNetModel.from_pretrained("lllyasviel/control_v11f1e_sd15_tile", torch_dtype=torch.float16)
     pipe_tile = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
@@ -149,7 +167,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     pipe_tile.enable_model_cpu_offload()
     images_out["controlnet_tile"] = encode_img(pipe_tile(
         prompt=prompt + ", high detail, sharp focus",
-        image=input_image,  # Uses original image directly
+        image=input_image,
         num_inference_steps=steps,
         generator=torch.manual_seed(6),
         guidance_scale=guidance_scale,
@@ -209,7 +227,7 @@ def fastapi_app():
                 "controlnet_pose",
                 "controlnet_scribble",
                 "controlnet_normal",
-                "controlnet_tile"  # Updated to working tile model
+                "controlnet_tile"
             ]
         }
 
