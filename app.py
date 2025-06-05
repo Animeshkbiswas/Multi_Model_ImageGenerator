@@ -166,7 +166,7 @@ if submitted:
                 MODAL_URL,
                 json=request_data,
                 headers={"Content-Type": "application/json"},
-                timeout=300
+                timeout=3000
             )
             
             # Process results
