@@ -33,7 +33,7 @@ MODEL_DISPLAY_NAMES = {
     "controlnet_pose": "Pose-Aware Art",
     "controlnet_scribble": "Sketch-to-Art",
     "controlnet_normal": "Surface-Normal Art",
-    "combined_canny_pose": "Edge+Pose Fusion"
+    "DWOpenPose (DensePose + OpenPose)": "Fusion of DensePose + OpenPose "
 }
 
 # Run Generation
@@ -135,5 +135,5 @@ with st.sidebar:
     - **Pose-Aware Art** – Maintains human poses and body positions accurately  
     - **Sketch-to-Art** – Transforms rough sketches into refined artwork  
     - **Surface-Normal Art** – Generates with accurate surface lighting and textures  
-    - **Edge+Pose Fusion** – Combines edge detection and pose awareness for precise generation  
+    - **DWOpenPose (DensePose + OpenPose)** – Combines dense detection and pose awareness for precise generation  
     """)

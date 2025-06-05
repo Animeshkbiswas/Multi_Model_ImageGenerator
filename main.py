@@ -7,7 +7,8 @@ image = (
     .apt_install("libgl1", "libglib2.0-0")
     .pip_install(
         "torch", "diffusers", "transformers", "accelerate", "opencv-python",
-        "safetensors", "Pillow", "fastapi", "pydantic", "mediapipe", "controlnet-aux"
+        "safetensors", "Pillow", "fastapi", "pydantic", "mediapipe", 
+        "controlnet-aux>=0.0.6"  # Required for DWOpenPose
     )
 )
 
@@ -30,7 +31,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     import io
     import cv2
     from transformers import DPTFeatureExtractor, DPTForDepthEstimation
-    from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector
+    from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector, DWPoseDetector
 
     def decode_img(b64):
         return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize((768, 768))
@@ -137,31 +138,24 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="flat, noisy"
     ).images[0])
 
-    # === SLOT 6: Combined Canny + OpenPose
-    # Resize control images to standard 512x512
-    canny_combined = canny_pil.resize((512, 512))
-    pose_combined = pose_img.resize((512, 512))
-    
-    # Create new instances of controlnets for the combined pipeline
-    controlnet_canny_combined = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
-    controlnet_pose_combined = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
-    
-    pipe_combined = StableDiffusionControlNetPipeline.from_pretrained(
+    # === SLOT 6: DWOpenPose (DensePose + OpenPose) - REPLACED COMBINED CANNY+OPENPOSE
+    dwpose_detector = DWPoseDetector.from_pretrained("yzd-v/DWPose")
+    dwpose_img = dwpose_detector(input_image)
+    controlnet_dwpose = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
+    pipe_dwpose = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
-        controlnet=[controlnet_canny_combined, controlnet_pose_combined],
+        controlnet=controlnet_dwpose,
         torch_dtype=torch.float16
     )
-    pipe_combined.scheduler = UniPCMultistepScheduler.from_config(pipe_combined.scheduler.config)
-    pipe_combined.enable_model_cpu_offload()
-    
-    images_out["combined_canny_pose"] = encode_img(pipe_combined(
-        prompt=prompt + ", detailed edges and pose",
-        image=[canny_combined, pose_combined],
+    pipe_dwpose.scheduler = UniPCMultistepScheduler.from_config(pipe_dwpose.scheduler.config)
+    pipe_dwpose.enable_model_cpu_offload()
+    images_out["dwpose"] = encode_img(pipe_dwpose(
+        prompt=prompt + ", anatomical accuracy, dynamic pose",
+        image=dwpose_img,
         num_inference_steps=steps,
         generator=torch.manual_seed(6),
         guidance_scale=guidance_scale,
-        negative_prompt="blurry, distorted, low resolution",
-        controlnet_conditioning_scale=[1.0, 1.0]  # Equal weight for both controlnets
+        negative_prompt="blurry, distorted anatomy"
     ).images[0])
 
     return images_out
@@ -217,7 +211,7 @@ def fastapi_app():
                 "controlnet_pose",
                 "controlnet_scribble",
                 "controlnet_normal",
-                "combined_canny_pose"
+                "dwpose"  # Updated from combined_canny_pose
             ]
         }
 
