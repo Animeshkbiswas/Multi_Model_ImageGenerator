@@ -7,7 +7,7 @@ import time
 import os
 
 st.set_page_config(page_title="Multi-Model Image Generator", layout="centered")
-MODAL_URL = os.getenv("MODAL_URL")
+MODAL_URL = os.getenv("MODAL_URL") or "https://your-api-url/compare"  # Replace with your actual API URL or set as env var
 
 st.title("Multi-Model Image Generator")
 st.markdown("Compare AI-generated images from different models side by side.")
@@ -26,14 +26,14 @@ with st.form("generation_form"):
     prompt = st.text_area("Prompt", placeholder="e.g., 'a woman in traditional Indian attire standing in a sunset field'")
     submitted = st.form_submit_button("Generate & Compare")
 
-# Model display names mapping
+# Model display names
 MODEL_DISPLAY_NAMES = {
-    "controlnet_canny": "Edge-Guided Art",
-    "controlnet_depth": "3D Depth Art",
-    "controlnet_pose": "Pose-Aware Art",
-    "controlnet_scribble": "Sketch-to-Art",
-    "controlnet_normal": "Surface-Normal Art",
-    "controlnet_tile": "Tile-Based Art"
+    "base": "SDXL Base",
+    "depth": "3D Depth Art",
+    "pose": "Pose-Aware Art",
+    "canny": "Edge-Guided Art",
+    "scribble": "Sketch-to-Art",
+    "tile": "Tile-Based Art"
 }
 
 # Run Generation
@@ -48,7 +48,7 @@ if submitted:
     with st.spinner("Generating images... please wait."):
         progress_bar = st.progress(10)
         status_text = st.empty()
-        
+
         try:
             image_bytes = uploaded_file.read()
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -69,41 +69,41 @@ if submitted:
 
             if response.status_code == 200:
                 result = response.json()
-                if "images" in result:
+                if result:
                     elapsed = time.time() - start_time
                     st.success(f"Generation completed in {elapsed:.1f} seconds.")
                     st.image(Image.open(io.BytesIO(image_bytes)), caption="Your Uploaded Image", use_container_width=True)
 
                     st.markdown("### Model Outputs")
-                    images = result["images"]
-                    
-                    # Create columns based on number of returned images
+                    images = result
+
                     cols = st.columns(len(images))
-                    
                     for i, (model_key, img_b64) in enumerate(images.items()):
                         with cols[i]:
-                            image_data = base64.b64decode(img_b64)
-                            image = Image.open(io.BytesIO(image_data))
-                            
-                            # Use the display name from our mapping
                             display_name = MODEL_DISPLAY_NAMES.get(model_key, model_key)
-                            st.image(image, caption=display_name, use_container_width=True)
 
-                            # Download Button
-                            buffered = io.BytesIO()
-                            image.save(buffered, format="PNG")
-                            st.download_button(
-                                label="Download",
-                                data=buffered.getvalue(),
-                                file_name=f"{display_name.replace(' ', '_')}.png",
-                                mime="image/png"
-                            )
+                            if img_b64 != "generation_failed":
+                                image_data = base64.b64decode(img_b64)
+                                image = Image.open(io.BytesIO(image_data))
+                                st.image(image, caption=display_name, use_container_width=True)
+
+                                buffered = io.BytesIO()
+                                image.save(buffered, format="PNG")
+                                st.download_button(
+                                    label="Download",
+                                    data=buffered.getvalue(),
+                                    file_name=f"{display_name.replace(' ', '_')}.png",
+                                    mime="image/png"
+                                )
+                            else:
+                                st.warning(f"{display_name} failed.")
                 else:
                     st.error("Unexpected response format from API.")
             else:
                 st.error(f"API error: {response.status_code} - {response.text}")
 
             progress_bar.progress(100)
+
         except requests.exceptions.Timeout:
             st.error("Request timed out.")
         except Exception as e:
@@ -112,7 +112,7 @@ if submitted:
             status_text.empty()
             progress_bar.empty()
 
-# Sidebar: API Status
+# Sidebar: API Status and Info
 with st.sidebar:
     st.header("API Status")
     if st.button("Check API Health"):
@@ -130,10 +130,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Models Used")
     st.markdown("""
-    - **Edge-Guided Art** – Creates art based on image edges and contours  
-    - **3D Depth Art** – Generates with understanding of depth and spatial relationships  
-    - **Pose-Aware Art** – Maintains human poses and body positions accurately  
-    - **Sketch-to-Art** – Transforms rough sketches into refined artwork  
-    - **Surface-Normal Art** – Generates with accurate surface lighting and textures  
-    - **Controlnet_tile** – Generates art with a focus on tile-based patterns and structures
+- **SDXL Base** – Original generation using Stable Diffusion XL + Refiner  
+- **3D Depth Art** – Adds realism using spatial depth from your image  
+- **Pose-Aware Art** – Preserves human posture using OpenPose  
+- **Edge-Guided Art** – Creates with structure from detected edges  
+- **Sketch-to-Art** – Transforms rough lines into detailed art  
+- **Tile-Based Art** – Emphasizes pattern, symmetry, and coherence
     """)
