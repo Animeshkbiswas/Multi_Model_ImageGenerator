@@ -8,7 +8,7 @@ image = (
     .pip_install(
         "torch", "diffusers", "transformers", "accelerate", "opencv-python",
         "safetensors", "Pillow", "fastapi", "pydantic", "mediapipe", 
-        "controlnet-aux>=0.0.6"  # Required for DWOpenPose
+        "controlnet-aux>=0.0.6"
     )
 )
 
@@ -31,7 +31,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     import io
     import cv2
     from transformers import DPTFeatureExtractor, DPTForDepthEstimation
-    from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector, DWPoseDetector
+    from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector
 
     def decode_img(b64):
         return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize((768, 768))
@@ -138,24 +138,22 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         negative_prompt="flat, noisy"
     ).images[0])
 
-    # === SLOT 6: DWOpenPose (DensePose + OpenPose) - REPLACED COMBINED CANNY+OPENPOSE
-    dwpose_detector = DWPoseDetector.from_pretrained("yzd-v/DWPose")
-    dwpose_img = dwpose_detector(input_image)
-    controlnet_dwpose = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
-    pipe_dwpose = StableDiffusionControlNetPipeline.from_pretrained(
+    # === SLOT 6: ControlNet (Tile) - REPLACED SoftEdge with working alternative
+    controlnet_tile = ControlNetModel.from_pretrained("lllyasviel/control_v11f1e_sd15_tile", torch_dtype=torch.float16)
+    pipe_tile = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
-        controlnet=controlnet_dwpose,
+        controlnet=controlnet_tile,
         torch_dtype=torch.float16
     )
-    pipe_dwpose.scheduler = UniPCMultistepScheduler.from_config(pipe_dwpose.scheduler.config)
-    pipe_dwpose.enable_model_cpu_offload()
-    images_out["dwpose"] = encode_img(pipe_dwpose(
-        prompt=prompt + ", anatomical accuracy, dynamic pose",
-        image=dwpose_img,
+    pipe_tile.scheduler = UniPCMultistepScheduler.from_config(pipe_tile.scheduler.config)
+    pipe_tile.enable_model_cpu_offload()
+    images_out["controlnet_tile"] = encode_img(pipe_tile(
+        prompt=prompt + ", high detail, sharp focus",
+        image=input_image,  # Uses original image directly
         num_inference_steps=steps,
         generator=torch.manual_seed(6),
         guidance_scale=guidance_scale,
-        negative_prompt="blurry, distorted anatomy"
+        negative_prompt="blurry, low detail, out of focus"
     ).images[0])
 
     return images_out
@@ -211,7 +209,7 @@ def fastapi_app():
                 "controlnet_pose",
                 "controlnet_scribble",
                 "controlnet_normal",
-                "dwpose"  # Updated from combined_canny_pose
+                "controlnet_tile"  # Updated to working tile model
             ]
         }
 
