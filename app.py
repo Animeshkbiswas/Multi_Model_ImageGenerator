@@ -61,7 +61,7 @@ if submitted:
                 MODAL_URL,
                 json={"prompt": prompt, "input_image_b64": image_b64},
                 headers={"Content-Type": "application/json"},
-                timeout=180
+                timeout=1800
             )
 
             progress_bar.progress(80)
