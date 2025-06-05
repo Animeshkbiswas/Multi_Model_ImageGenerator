@@ -5,8 +5,8 @@ from PIL import Image
 import io
 import time
 import os
-st.set_page_config(page_title="Multi-Model Image Generator", layout="centered")
 
+st.set_page_config(page_title="Multi-Model Image Generator", layout="centered")
 MODAL_URL = os.getenv("MODAL_URL")
 
 st.title("Multi-Model Image Generator")
@@ -62,24 +62,25 @@ if submitted:
                 if "images" in result:
                     elapsed = time.time() - start_time
                     st.success(f"Generation completed in {elapsed:.1f} seconds.")
-
                     st.image(Image.open(io.BytesIO(image_bytes)), caption="Your Uploaded Image", use_container_width=True)
 
                     st.markdown("### Model Outputs")
-                    cols = st.columns(len(result["images"]))
-                    for i, (model_name, img_b64) in enumerate(result["images"].items()):
+                    images = result["images"]
+                    cols = st.columns(len(images))
+
+                    for i, (model_key, img_b64) in enumerate(images.items()):
                         with cols[i]:
                             image_data = base64.b64decode(img_b64)
                             image = Image.open(io.BytesIO(image_data))
-                            st.image(image, caption=model_name.replace("_", " ").title(), use_container_width=True)
+                            st.image(image, caption=model_key.replace("_", " ").title(), use_container_width=True)
 
-                            # Create downloadable file
+                            # Download Button
                             buffered = io.BytesIO()
                             image.save(buffered, format="PNG")
                             st.download_button(
                                 label="Download",
                                 data=buffered.getvalue(),
-                                file_name=f"{model_name}.png",
+                                file_name=f"{model_key}.png",
                                 mime="image/png"
                             )
                 else:
@@ -116,5 +117,8 @@ with st.sidebar:
     st.markdown("""
     - **ControlNet (Canny)** – Structure-aware generation based on image edges  
     - **ControlNet (Depth)** – Depth-guided generation understanding 3D structure  
-    - **SDXL Turbo (img2img)** – Transforms the original image using your prompt  
+    - **ControlNet (OpenPose)** – Generates based on body pose and skeleton  
+    - **ControlNet (Scribble)** – Sketch-to-image generation using scribbles  
+    - **ControlNet (Normal Map)** – Surface-aware generation using normals  
+    - **SDXL Turbo (img2img)** – Fast, high-quality transformation from image  
     """)
