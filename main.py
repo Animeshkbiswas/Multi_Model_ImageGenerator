@@ -14,7 +14,7 @@ image = (
 
 @app.function(
     image=image,
-    gpu="A10G",
+    gpu="A100-40GB",
     timeout=600,
     min_containers=1
 )
@@ -35,7 +35,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     from controlnet_aux import OpenposeDetector, CannyDetector, NormalBaeDetector
 
     def decode_img(b64):
-        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize((1024, 1024))
+        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize((768, 768))
 
     def encode_img(img):
         buffer = io.BytesIO()
@@ -59,7 +59,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
         num_inference_steps=steps,
         generator=torch.manual_seed(1),
         guidance_scale=guidance_scale,
-         negative_prompt="monochrome, grayscale, blurry, dull"
+         negative_prompt="monochrome, blurry, dull"
     ).images[0])
 
     # === SLOT 2: ControlNet (Depth) ===
@@ -69,7 +69,7 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     with torch.no_grad():
         depth_output = depth_model(**depth_inputs)
         depth = depth_output.predicted_depth
-    depth = torch.nn.functional.interpolate(depth.unsqueeze(1), size=(1024, 1024), mode="bicubic", align_corners=False)
+    depth = torch.nn.functional.interpolate(depth.unsqueeze(1), size=(768, 768), mode="bicubic", align_corners=False)
     depth = depth.squeeze().cpu().numpy()
     depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
     depth_pil = Image.fromarray(depth.astype("uint8")).convert("RGB")
@@ -124,8 +124,8 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     # === SLOT 5: IMPROVED ControlNet (Normal Map) ===
     try:
         normal_detector = NormalBaeDetector.from_pretrained("lllyasviel/Annotators")
-        normal_img = normal_detector(input_image, detect_resolution=1024, image_resolution=1024)
-        
+        normal_img = normal_detector(input_image, detect_resolution=768, image_resolution=768)
+
         # Enhanced normal map processing
         normal_np = np.array(normal_img)
         normal_np = cv2.GaussianBlur(normal_np, (3, 3), 0)  # Reduce noise
