@@ -54,12 +54,12 @@ def generate_images(prompt: str, input_image_b64: str, strength: float = 0.6, gu
     pipe_canny.scheduler = UniPCMultistepScheduler.from_config(pipe_canny.scheduler.config)
     pipe_canny.enable_model_cpu_offload()
     images_out["controlnet_canny"] = encode_img(pipe_canny(
-        prompt=prompt + ", edge-enhanced, clean lines",
+         prompt=prompt + ", vivid colors, edge-enhanced, realistic lighting",
         image=canny_pil,
         num_inference_steps=steps,
         generator=torch.manual_seed(1),
         guidance_scale=guidance_scale,
-        negative_prompt="blurry, low resolution"
+         negative_prompt="monochrome, grayscale, blurry, dull"
     ).images[0])
 
     # === SLOT 2: ControlNet (Depth) ===
