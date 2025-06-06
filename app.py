@@ -62,8 +62,13 @@ MODEL_CONFIG = {
     "canny": {
         "name": "Edge Detection",
         "description": "Edge-guided generation"
+    },
+    "edit": {
+        "name": "Image Editing",
+        "description": "Edit original image based on prompt instructions"
     }
 }
+
 
 # Sidebar with info and controls
 with st.sidebar:
