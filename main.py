@@ -1,11 +1,15 @@
 import modal
+import os
+HF_TOKEN = os.environ.get("HF_TOKEN")
 from diffusers import (
     StableDiffusionXLPipeline,
     StableDiffusionXLImg2ImgPipeline,
     StableDiffusionXLControlNetPipeline,
+    StableDiffusionXLInstructPix2PixPipeline,
     DPMSolverMultistepScheduler,
     AutoencoderKL,
     ControlNetModel,
+    EDMEulerScheduler,
 )
 from PIL import Image
 import numpy as np
@@ -14,6 +18,7 @@ import io
 import torch
 from transformers import DPTFeatureExtractor, DPTForDepthEstimation
 from controlnet_aux.open_pose import OpenposeDetector
+from huggingface_hub import hf_hub_download, InferenceClient
 import cv2
 
 app = modal.App("multi-model-image-api")
@@ -24,7 +29,7 @@ image = (
     .pip_install(
         "numpy<2.0",
         "torch==2.1.2",
-        "diffusers==0.26.3",
+        "diffusers==0.27.2",
         "transformers==4.38.2",
         "accelerate==0.27.2",
         "opencv-python==4.9.0.80",
@@ -47,6 +52,33 @@ MODELS = {
     "canny": "diffusers/controlnet-canny-sdxl-1.0",
     "vae": "madebyollin/sdxl-vae-fp16-fix"
 }
+@app.function(secrets=[modal.Secret.from_name("huggingface-secret")])
+def f():
+   HF_TOKEN = print(os.environ["HF_TOKEN"])
+# Prompt Enhancer using Zephyr LLM
+client1 = InferenceClient(
+    model="HuggingFaceH4/zephyr-7b-beta",
+    token= HF_TOKEN
+)
+system_instructions1 = """<|system|>
+Act as an Image Prompt Generation expert. Your task is to rewrite and enhance USER's prompt for image generation using Stable Diffusion XL.
+Ensure the enhanced prompt includes key descriptors for:
+- quality (e.g., 4K, masterpiece, ultra-detailed)
+- style (e.g., realistic)
+- lighting/composition (e.g., cinematic lighting)
+
+Keep it concise but expressive. Add style/quality keywords at the end.
+<|user|>
+"""
+
+def promptifier(prompt: str) -> str:
+    formatted_prompt = f"{system_instructions1}{prompt}\n<|assistant|>\n"
+    try:
+        enhanced = client1.text_generation(formatted_prompt, max_new_tokens=100)
+        return enhanced.strip()
+    except Exception as e:
+        print(f"Prompt enhancement failed: {e}")
+        return prompt  # Fallback
 
 def decode_img(b64: str) -> Image.Image:
     try:
@@ -67,9 +99,6 @@ def encode_img(img: Image.Image) -> str:
 
 def get_controlnet_output(prompt, guide_img, model_id, vae, refiner=None, seed=1, refine_strength=0.3):
     try:
-        if "sdxl" not in model_id.lower() and "xl" not in model_id.lower():
-            raise ValueError(f"Model {model_id} is not SDXL compatible")
-            
         controlnet = ControlNetModel.from_pretrained(model_id, torch_dtype=torch.float16)
         pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
             MODELS["base"],
@@ -78,8 +107,7 @@ def get_controlnet_output(prompt, guide_img, model_id, vae, refiner=None, seed=1
             vae=vae
         )
         pipe.enable_model_cpu_offload()
-        
-        # Generate the ControlNet-guided image
+
         image = pipe(
             prompt=prompt,
             image=guide_img,
@@ -87,24 +115,23 @@ def get_controlnet_output(prompt, guide_img, model_id, vae, refiner=None, seed=1
             guidance_scale=8.0,
             generator=torch.manual_seed(seed)
         ).images[0]
-        
-        # Apply controlled refinement if requested
+
         if refiner and refine_strength > 0:
             image = refiner(
                 prompt=prompt,
                 image=image,
                 strength=refine_strength,
                 num_inference_steps=max(10, int(30 * refine_strength)),
-                guidance_scale=5.0,  # Lower guidance for refinement
+                guidance_scale=5.0,
                 generator=torch.manual_seed(seed)
             ).images[0]
-        
+
         return encode_img(image)
     except Exception as e:
         print(f"ControlNet failed for {model_id}: {str(e)}")
         return "generation_failed"
 
-@app.function(image=image, gpu="A100-80GB", timeout=6000)
+@app.function(image=image, gpu="A100-40GB", secrets=[modal.Secret.from_name("huggingface-secret")], timeout=6000)
 def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8.0, steps=30):
     results = {}
     input_image = decode_img(input_image_b64) if input_image_b64 else None
@@ -112,7 +139,6 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
     try:
         vae = AutoencoderKL.from_pretrained(MODELS["vae"], torch_dtype=torch.float16)
 
-        # Initialize refiner first since we'll use it in ControlNet processing
         refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
             MODELS["refiner"],
             torch_dtype=torch.float16,
@@ -120,7 +146,6 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
         )
         refiner.enable_model_cpu_offload()
 
-        # Base pipeline setup
         base_pipe = StableDiffusionXLPipeline.from_pretrained(
             MODELS["base"],
             torch_dtype=torch.float16,
@@ -135,10 +160,12 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
         )
         base_pipe.enable_model_cpu_offload()
 
-        generator = torch.manual_seed(1)
-        enhanced_prompt = f"{prompt}, masterpiece, 4K, best quality"
+        # Apply prompt enhancement
+        enhanced_prompt = promptifier(prompt)
+        print(f"Enhanced prompt: {enhanced_prompt}")
 
-        # Base image generation
+        generator = torch.manual_seed(1)
+
         if input_image and strength > 0:
             latent = base_pipe(
                 prompt=enhanced_prompt,
@@ -160,7 +187,6 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
                 output_type="latent"
             ).images[0]
 
-        # Full strength refinement for base image
         refined = refiner(
             prompt=enhanced_prompt,
             image=latent,
@@ -171,7 +197,6 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
         results["base"] = encode_img(refined)
 
         if input_image:
-            # Depth with moderate refinement
             try:
                 depth_model = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas")
                 depth_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
@@ -179,47 +204,80 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
                 with torch.no_grad():
                     depth = depth_model(**depth_inputs).predicted_depth
                 depth = torch.nn.functional.interpolate(
-                    depth.unsqueeze(1), 
-                    size=(1024, 1024), 
+                    depth.unsqueeze(1),
+                    size=(1024, 1024),
                     mode="bicubic"
                 ).squeeze().cpu().numpy()
                 depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255
                 depth_img = Image.fromarray(depth.astype("uint8")).convert("RGB")
                 results["depth"] = get_controlnet_output(
-                    prompt, depth_img, MODELS["depth"], vae, refiner, seed=2, refine_strength=0.3
+                    enhanced_prompt, depth_img, MODELS["depth"], vae, refiner, seed=2, refine_strength=0.3
                 )
             except Exception as e:
                 print(f"Depth failed: {str(e)}")
                 results["depth"] = "generation_failed"
 
-            # Pose with light refinement
             try:
                 pose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
                 pose_img = pose_detector(input_image)
                 results["pose"] = get_controlnet_output(
-                    prompt, pose_img, MODELS["pose"], vae, refiner, seed=3, refine_strength=0.2
+                    enhanced_prompt, pose_img, MODELS["pose"], vae, refiner, seed=3, refine_strength=0.2
                 )
             except Exception as e:
                 print(f"Pose failed: {str(e)}")
                 results["pose"] = "generation_failed"
 
-            # Canny with moderate refinement
             try:
                 canny_edges = cv2.Canny(np.array(input_image), 100, 200)
                 canny_img = Image.fromarray(canny_edges).convert("RGB")
                 results["canny"] = get_controlnet_output(
-                    prompt, canny_img, MODELS["canny"], vae, refiner, seed=4, refine_strength=0.4
+                    enhanced_prompt, canny_img, MODELS["canny"], vae, refiner, seed=4, refine_strength=0.4
                 )
             except Exception as e:
                 print(f"Canny failed: {str(e)}")
                 results["canny"] = "generation_failed"
+
+            try:
+                cosxl_edit_path = hf_hub_download(
+                 repo_id="stabilityai/cosxl",
+                  filename="cosxl_edit.safetensors",
+                  token=HF_TOKEN
+                )
+
+                edit_pipe = StableDiffusionXLInstructPix2PixPipeline.from_single_file(
+                    cosxl_edit_path,
+                    num_in_channels=8,
+                    is_cosxl_edit=True,
+                    vae=vae,
+                    torch_dtype=torch.float16
+                )
+                edit_pipe.scheduler = EDMEulerScheduler(
+                    sigma_min=0.002,
+                    sigma_max=120.0,
+                    sigma_data=1.0,
+                    prediction_type="v_prediction"
+                )
+                edit_pipe.to("cuda")
+
+                edited = edit_pipe(
+                    prompt=enhanced_prompt,
+                    image=input_image,
+                    guidance_scale=7.5,
+                    num_inference_steps=30,
+                    generator=torch.manual_seed(5)
+                ).images[0]
+
+                results["edit"] = encode_img(edited)
+            except Exception as e:
+                print(f"InstructPix2Pix failed: {str(e)}")
+                results["edit"] = "generation_failed"
 
     except Exception as e:
         results["error"] = f"Generation failed: {str(e)}"
 
     return results
 
-@app.function(image=image)
+@app.function(image=image,  secrets=[modal.Secret.from_name("huggingface-secret")])
 @modal.asgi_app()
 def fastapi_app():
     from fastapi import FastAPI, HTTPException
