@@ -277,7 +277,7 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
 
     return results
 
-@app.function(image=image,  secrets=[modal.Secret.from_name("huggingface-secret")])
+@app.function(image=image, timeout=6000, secrets=[modal.Secret.from_name("huggingface-secret")])
 @modal.asgi_app()
 def fastapi_app():
     from fastapi import FastAPI, HTTPException
