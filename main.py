@@ -262,8 +262,8 @@ def generate_images(prompt, input_image_b64=None, strength=0.7, guidance_scale=8
                 edited = edit_pipe(
                     prompt=enhanced_prompt,
                     image=input_image,
-                    guidance_scale=7.5,
-                    num_inference_steps=30,
+                    guidance_scale=10,
+                    num_inference_steps=50,
                     generator=torch.manual_seed(5)
                 ).images[0]
 
